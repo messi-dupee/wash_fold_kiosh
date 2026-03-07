@@ -8,351 +8,474 @@ import subprocess
 import threading
 from datetime import datetime, timedelta
 
-# ================== PATHS ==================
-
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "store.db"
 RECEIPT_FILE = str(BASE_DIR / "receipt_a4.pdf")
-PRINTER_NAME = "HP_LaserJet_MFP_M28_M31"
+PRINTER_NAME = "POS-80"
 
-# ================== DATABASE INIT ==================
+# ================= DATABASE =================
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS entries (
+    c = conn.cursor()
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS entries(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        number TEXT NOT NULL,
-        name TEXT NOT NULL,
-        weight REAL NOT NULL,
-        price REAL NOT NULL,
-        dropoff_time TEXT NOT NULL
+        number TEXT,
+        name TEXT,
+        weight REAL,
+        price REAL,
+        dropoff_time TEXT
     )
     """)
+
+    conn.commit()
+    conn.close()
+
+def upgrade_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    try:
+        c.execute("ALTER TABLE entries ADD COLUMN queen_qty INTEGER DEFAULT 0")
+    except:
+        pass
+
+    try:
+        c.execute("ALTER TABLE entries ADD COLUMN king_qty INTEGER DEFAULT 0")
+    except:
+        pass
+
     conn.commit()
     conn.close()
 
 init_db()
+upgrade_db()
 
-# ================== CLEANING ==================
+# ================= CLEAN INPUT =================
 
-def clean_phone_number(value):
-    digits = "".join(filter(str.isdigit, value))
-    return digits[:10]
+def clean_phone_number(v):
+    return "".join(filter(str.isdigit, v))[:10]
 
-def clean_name(value):
-    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ "
-    return "".join(c for c in value if c in allowed)
+def clean_name(v):
+    allowed="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ "
+    return "".join(c for c in v if c in allowed)
 
-# ================== PICKUP LOGIC ==================
+# ================= PICKUP =================
 
 def calculate_pickup_time(dropoff):
     pickup = dropoff + timedelta(hours=8)
 
-    if pickup.weekday() == 2:  # Wednesday
+    if pickup.weekday()==2:
         pickup += timedelta(days=1)
 
     if pickup.hour < 12:
-        pickup = pickup.replace(hour=12, minute=0, second=0)
+        pickup = pickup.replace(hour=12,minute=0,second=0)
 
     return pickup
 
-# ================== ORDER NUMBER ==================
+# ================= ORDER NUMBER =================
 
 def get_today_order_number():
-    today = datetime.now().strftime("%Y-%m-%d")
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT COUNT(*) FROM entries WHERE dropoff_time LIKE ?",
-        (today + "%",)
-    )
-    count = cursor.fetchone()[0]
-    conn.close()
-    return count + 1
 
-# ================== CUSTOMER LOOKUP ==================
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute(
+        "SELECT COUNT(*) FROM entries WHERE dropoff_time LIKE ?",
+        (today+"%",)
+    )
+
+    count = c.fetchone()[0]
+    conn.close()
+
+    return count+1
+
+# ================= CUSTOMER LOOKUP =================
 
 def get_customer_info(number):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
 
-    cursor.execute(
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute(
         "SELECT name FROM entries WHERE number=? ORDER BY id DESC LIMIT 1",
         (number,)
     )
-    name_row = cursor.fetchone()
 
-    cursor.execute("""
+    name_row = c.fetchone()
+
+    c.execute("""
         SELECT COUNT(*),
-               COALESCE(SUM(weight), 0),
-               COALESCE(SUM(price), 0)
+               COALESCE(SUM(weight),0),
+               COALESCE(SUM(price),0)
         FROM entries WHERE number=?
-    """, (number,))
-    visits, total_weight, total_price = cursor.fetchone()
+    """,(number,))
+
+    visits,total_weight,total_price = c.fetchone()
 
     conn.close()
-    return (name_row[0] if name_row else None), visits, total_weight, total_price
 
-# ================== PRINT RECEIPT ==================
+    return (name_row[0] if name_row else None),visits,total_weight,total_price
 
-def print_receipt(order_number, number, name, weight, price, dropoff, pickup):
-    c = canvas.Canvas(RECEIPT_FILE, pagesize=A4)
-    width, height = A4
+# ================= PRICE CALC =================
 
-    c.setFont("Courier-Bold", 18)
-    c.drawCentredString(width / 2, height - 50, "SENTER LAUNDROMAT")
-    c.drawCentredString(width / 2, height - 75, f"ORDER #{order_number}")
+def update_price(*args):
 
-    c.setFont("Courier", 12)
+    if weight_var.get().replace('.','',1).isdigit():
+        weight=float(weight_var.get())
+    else:
+        weight=0
 
-    y = height - 120
-    c.drawString(50, y, f"Drop-Off Time: {dropoff}")
-    y -= 22
-    c.drawString(50, y, f"Pickup Time: {pickup}")
-    y -= 30
+    price_per_lb = 2.0 if separate_var.get() else 1.5
 
-    c.drawString(50, y, f"Phone Number: {number}")
-    y -= 22
-    c.drawString(50, y, f"Customer Name: {name}")
-    y -= 30
+    laundry = weight * price_per_lb
+    queen = queen_qty.get()*20
+    king = king_qty.get()*25
 
-    c.drawString(50, y, f"Weight (lbs): {weight:.2f}")
-    y -= 22
-    c.drawString(50, y, f"Price ($): {price:.2f}")
+    total = laundry + queen + king
+
+    money_var.set(f"{total:.2f}")
+
+# ================= COMFORTER BUTTONS =================
+
+def change_queen(delta):
+    q=queen_qty.get()+delta
+    if q<0: q=0
+    queen_qty.set(q)
+    update_price()
+
+def change_king(delta):
+    k=king_qty.get()+delta
+    if k<0: k=0
+    king_qty.set(k)
+    update_price()
+
+# ================= AUTO LOOKUP =================
+
+def on_phone_change(*args):
+
+    number = clean_phone_number(phone_var.get())
+
+    if phone_var.get()!=number:
+        phone_var.set(number)
+
+    if len(number)==10:
+
+        name,visits,total_weight,total_price = get_customer_info(number)
+
+        if name:
+            name_var.set(name)
+
+            totals_label.config(
+                text=f"Total Weight: {total_weight:.2f} lbs | Total Price: ${total_price:.2f}",
+                fg="blue"
+            )
+
+            visits_label.config(
+                text=f"Visits: {visits}",
+                fg="purple"
+            )
+
+            status_label.config(text="")
+
+        else:
+            status_label.config(text="New Customer",fg="green")
+
+# ================= DASHBOARD =================
+
+def show_dashboard():
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT
+            COUNT(*),
+            COALESCE(SUM(weight),0),
+            COALESCE(SUM(queen_qty),0),
+            COALESCE(SUM(king_qty),0),
+            COALESCE(SUM(price),0)
+        FROM entries
+        WHERE dropoff_time LIKE ?
+    """,(today+"%",))
+
+    orders,pounds,queens,kings,revenue = c.fetchone()
+
+    conn.close()
+
+    win = tk.Toplevel(root)
+    win.title("Daily Dashboard")
+    win.geometry("500x400")
+
+    tk.Label(win,text="TODAY'S BUSINESS",font=("Arial",28,"bold")).pack(pady=20)
+
+    tk.Label(win,text=f"Orders Today: {orders}",font=("Arial",22)).pack(pady=5)
+    tk.Label(win,text=f"Total Pounds: {pounds:.2f} lb",font=("Arial",22)).pack(pady=5)
+    tk.Label(win,text=f"Queen Comforters: {queens}",font=("Arial",22)).pack(pady=5)
+    tk.Label(win,text=f"King Comforters: {kings}",font=("Arial",22)).pack(pady=5)
+
+    tk.Label(win,text=f"Total Revenue: ${revenue:.2f}",
+             font=("Arial",24,"bold"),fg="green").pack(pady=15)
+
+# ================= PRINT RECEIPT =================
+
+def print_receipt(order,number,name,weight,price_per_lb,
+                  queen_q,king_q,total,drop,pick,copies):
+
+    laundry = weight * price_per_lb
+
+    c = canvas.Canvas(RECEIPT_FILE,pagesize=A4)
+    width,height=A4
+
+    c.setFont("Courier-Bold",50)
+    c.drawCentredString(width/2,height-60,"SENTER LAUNDROMAT")
+
+    c.setFont("Courier-Bold",40)
+    c.drawCentredString(width/2,height-120,f"ORDER #{order}")
+
+    c.setFont("Courier",32)
+
+    x=50
+    y=height-220
+
+    c.drawString(x,y,f"DROP: {drop}")
+    y-=50
+
+    c.setFont("Courier-Bold",32)
+
+    c.drawString(x,y,f"PICKUP: {pick}")
+    y-=70
+
+    c.setFont("Courier",32)
+
+    c.drawString(x,y,f"Phone: {number}")
+    y-=50
+
+    c.drawString(x,y,f"Name: {name}")
+    y-=70
+
+    c.setFont("Courier",25)
+
+    c.drawString(x,y,f"Laundry {weight:.2f} lb")
+    c.drawRightString(width-50,y,f"${laundry:.2f}")
+    y-=45
+
+    if price_per_lb==2.0:
+        c.setFont("Courier-Oblique",28)
+        c.drawString(x,y,"Separate Whites & Colors")
+        y-=40
+        c.setFont("Courier",32)
+
+    if queen_q>0:
+        qprice=queen_q*20
+        c.drawString(x,y,f"Queen Comforter x{queen_q}")
+        c.drawRightString(width-50,y,f"${qprice:.2f}")
+        y-=45
+
+    if king_q>0:
+        kprice=king_q*25
+        c.drawString(x,y,f"King Comforter x{king_q}")
+        c.drawRightString(width-50,y,f"${kprice:.2f}")
+        y-=45
+
+    y-=20
+    c.line(x,y,width-50,y)
+    y-=50
+
+    c.setFont("Courier-Bold",34)
+
+    c.drawString(x,y,"TOTAL")
+    c.drawRightString(width-50,y,f"${total:.2f}")
 
     c.save()
 
-    subprocess.run(
-        ["lp", "-d", PRINTER_NAME, RECEIPT_FILE],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
+    for i in range(copies):
+        subprocess.run(
+            ["lp","-d",PRINTER_NAME,RECEIPT_FILE],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
 
-# ================== SAVE ENTRY ==================
+# ================= SAVE ENTRY =================
 
 def save_entry():
-    number = clean_phone_number(phone_var.get())
-    name = clean_name(name_var.get()).strip()
 
-    if len(number) != 10:
-        messagebox.showerror("Error", "Phone number must be 10 digits")
-        return
+    number=clean_phone_number(phone_var.get())
+    name=clean_name(name_var.get())
 
-    if not name:
-        messagebox.showerror("Error", "Invalid name")
+    if len(number)!=10:
+        messagebox.showerror("Error","Phone number must be 10 digits")
         return
 
     try:
-        weight = float(weight_var.get())
-    except ValueError:
-        messagebox.showerror("Error", "Invalid weight")
+        weight=float(weight_var.get())
+    except:
+        messagebox.showerror("Error","Invalid weight")
         return
 
-    price = weight * 1.5
-    now = datetime.now()
-    pickup_time = calculate_pickup_time(now)
-    order_number = get_today_order_number()
+    price_per_lb = 2.0 if separate_var.get() else 1.5
 
-    dropoff_str = now.strftime("%Y-%m-%d %I:%M %p")
-    pickup_str = pickup_time.strftime("%Y-%m-%d %I:%M %p")
+    laundry=weight*price_per_lb
+    queen=queen_qty.get()*20
+    king=king_qty.get()*25
 
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO entries (number, name, weight, price, dropoff_time) VALUES (?, ?, ?, ?, ?)",
-        (number, name, weight, price, dropoff_str)
+    price=laundry+queen+king
+
+    now=datetime.now()
+    pickup=calculate_pickup_time(now)
+
+    order=get_today_order_number()
+
+    drop_db=now.strftime("%Y-%m-%d %H:%M:%S")
+    drop=now.strftime("%m/%d %I:%M%p")
+    pick=pickup.strftime("%m/%d %I:%M%p")
+
+    copies=int(copies_text.get())
+
+    conn=sqlite3.connect(DB_PATH)
+    c=conn.cursor()
+
+    c.execute(
+        "INSERT INTO entries(number,name,weight,queen_qty,king_qty,price,dropoff_time) VALUES(?,?,?,?,?,?,?)",
+        (number,name,weight,queen_qty.get(),king_qty.get(),price,drop_db)
     )
+
     conn.commit()
     conn.close()
 
     threading.Thread(
         target=print_receipt,
-        args=(order_number, number, name, weight, price, dropoff_str, pickup_str),
+        args=(order,number,name,weight,price_per_lb,
+              queen_qty.get(),king_qty.get(),price,
+              drop,pick,copies),
         daemon=True
     ).start()
 
-    order_label.config(text=f"{translations[current_language]['order']}: {order_number}")
-    dropoff_label.config(text=f"Drop-Off: {dropoff_str}")
-    pickup_label.config(text=f"Pickup: {pickup_str}")
+    order_label.config(text=f"Order Number: {order}")
+    dropoff_label.config(text=f"Drop-Off: {drop}")
+    pickup_label.config(text=f"Pickup: {pick}")
 
     phone_var.set("")
     name_var.set("")
     weight_var.set("")
     money_var.set("")
-    totals_label.config(text="")
-    visits_label.config(text="")
-    status_label.config(text="")
 
-# ================== AUTO LOOKUP ==================
+    queen_qty.set(0)
+    king_qty.set(0)
+    separate_var.set(False)
 
-def on_phone_change(*args):
-    cleaned = clean_phone_number(phone_var.get())
-    if phone_var.get() != cleaned:
-        phone_var.set(cleaned)
+# ================= GUI =================
 
-    if len(cleaned) == 10:
-        name, visits, total_weight, total_price = get_customer_info(cleaned)
-
-        if name:
-            name_var.set(name)
-            status_label.config(text="")
-            totals_label.config(
-                text=f"{translations[current_language]['total_weight']}: {total_weight:.2f} lbs | "
-                     f"{translations[current_language]['total_price']}: ${total_price:.2f}",
-                fg="blue"
-            )
-            visits_label.config(
-                text=f"{translations[current_language]['visits']}: {visits}",
-                fg="purple"
-            )
-        else:
-            name_var.set("")
-            status_label.config(
-                text=translations[current_language]["new_customer"],
-                fg="green"
-            )
-            totals_label.config(text="")
-            visits_label.config(text="")
-    else:
-        name_var.set("")
-        status_label.config(text="")
-        totals_label.config(text="")
-        visits_label.config(text="")
-
-# ================== LANGUAGE SYSTEM ==================
-
-current_language = "en"
-
-translations = {
-    "en": {
-        "phone": "Phone Number (10 digits)",
-        "name": "Customer Name",
-        "weight": "Weight of Clothes (lbs)",
-        "price": "Price ($)",
-        "new_customer": "New Customer",
-        "visits": "Visits",
-        "total_weight": "Total Weight",
-        "total_price": "Total Price",
-        "save": "SAVE ENTRY & PRINT RECEIPT",
-        "order": "Order Number",
-        "language_button": "Switch to Vietnamese"
-    },
-    "vi": {
-        "phone": "Số Điện Thoại (10 số)",
-        "name": "Tên Khách Hàng",
-        "weight": "Cân Nặng Quần Áo (lbs)",
-        "price": "Giá ($)",
-        "new_customer": "Khách Mới",
-        "visits": "Số Lần",
-        "total_weight": "Tổng Cân",
-        "total_price": "Tổng Tiền",
-        "save": "LƯU & IN HÓA ĐƠN",
-        "order": "Số Đơn Hàng",
-        "language_button": "Switch to English"
-    }
-}
-
-def update_language():
-    t = translations[current_language]
-    phone_label.config(text=t["phone"])
-    name_label.config(text=t["name"])
-    weight_label.config(text=t["weight"])
-    price_label.config(text=t["price"])
-    save_button.config(text=t["save"])
-    language_button.config(text=t["language_button"])
-
-def toggle_language():
-    global current_language
-    current_language = "vi" if current_language == "en" else "en"
-    update_language()
-
-# ================== GUI (ALIGNED GRID LAYOUT) ==================
-
-root = tk.Tk()
+root=tk.Tk()
 root.title("Laundromat Kiosk")
 root.geometry("1000x900")
 
-BIG = ("Arial", 22)
-ENTRY = ("Arial", 24)
-BOLD = ("Arial", 26, "bold")
+BIG=("Arial",28)
+ENTRY=("Arial",30)
+BOLD=("Arial",34,"bold")
 
-frame = tk.Frame(root, padx=60, pady=40)
-frame.pack(fill="both", expand=True)
+phone_var=tk.StringVar()
+name_var=tk.StringVar()
+weight_var=tk.StringVar()
+money_var=tk.StringVar()
 
-frame.columnconfigure(0, weight=1)
-frame.columnconfigure(1, weight=2)
+copies_text=tk.StringVar(value="1")
 
-language_button = tk.Button(frame, font=("Arial", 16), command=toggle_language)
-language_button.grid(row=0, column=1, sticky="e", pady=(0,20))
+separate_var=tk.BooleanVar()
+queen_qty=tk.IntVar(value=0)
+king_qty=tk.IntVar(value=0)
 
-# Phone
-phone_label = tk.Label(frame, font=BIG)
-phone_label.grid(row=1, column=0, sticky="w", pady=10)
+frame=tk.Frame(root,padx=60,pady=40)
+frame.pack(fill="both",expand=True)
 
-phone_var = tk.StringVar()
-phone_var.trace_add("write", on_phone_change)
-phone_entry = tk.Entry(frame, font=ENTRY, textvariable=phone_var)
-phone_entry.grid(row=1, column=1, sticky="ew", pady=10, ipady=10)
+frame.columnconfigure(0,weight=1)
+frame.columnconfigure(1,weight=2)
 
-# Name
-name_label = tk.Label(frame, font=BIG)
-name_label.grid(row=2, column=0, sticky="w", pady=10)
+tk.Label(frame,text="Phone Number",font=BIG).grid(row=0,column=0,sticky="w")
+tk.Entry(frame,font=ENTRY,textvariable=phone_var).grid(row=0,column=1,sticky="ew",ipady=12)
 
-name_var = tk.StringVar()
-name_entry = tk.Entry(frame, font=ENTRY, textvariable=name_var)
-name_entry.grid(row=2, column=1, sticky="ew", pady=10, ipady=10)
+phone_var.trace_add("write",on_phone_change)
 
-status_label = tk.Label(frame, text="", font=BOLD, fg="green")
-status_label.grid(row=3, column=0, columnspan=2, pady=10)
+tk.Label(frame,text="Customer Name",font=BIG).grid(row=1,column=0,sticky="w")
+tk.Entry(frame,font=ENTRY,textvariable=name_var).grid(row=1,column=1,sticky="ew",ipady=12)
 
-totals_label = tk.Label(frame, text="", font=BIG, fg="blue")
-totals_label.grid(row=4, column=0, columnspan=2)
+status_label=tk.Label(frame,text="",font=BOLD,fg="green")
+status_label.grid(row=2,column=0,columnspan=2)
 
-visits_label = tk.Label(frame, text="", font=BIG, fg="purple")
-visits_label.grid(row=5, column=0, columnspan=2, pady=(0,15))
+totals_label=tk.Label(frame,text="",font=BIG,fg="blue")
+totals_label.grid(row=3,column=0,columnspan=2)
 
-# Weight
-weight_label = tk.Label(frame, font=BIG)
-weight_label.grid(row=6, column=0, sticky="w", pady=10)
+visits_label=tk.Label(frame,text="",font=BIG,fg="purple")
+visits_label.grid(row=4,column=0,columnspan=2)
 
-weight_var = tk.StringVar()
-weight_var.trace_add("write", lambda *args:
-    money_var.set(f"{float(weight_var.get())*1.5:.2f}")
-    if weight_var.get().replace('.', '', 1).isdigit()
-    else money_var.set("")
-)
+tk.Label(frame,text="Weight (lbs)",font=BIG).grid(row=5,column=0,sticky="w")
+weight_var.trace_add("write",update_price)
+tk.Entry(frame,font=ENTRY,textvariable=weight_var).grid(row=5,column=1,ipady=12)
 
-weight_entry = tk.Entry(frame, font=ENTRY, textvariable=weight_var)
-weight_entry.grid(row=6, column=1, sticky="ew", pady=10, ipady=10)
-
-# Price
-price_label = tk.Label(frame, font=BIG)
-price_label.grid(row=7, column=0, sticky="w", pady=10)
-
-money_var = tk.StringVar()
-price_entry = tk.Entry(frame, font=ENTRY, textvariable=money_var, state="readonly")
-price_entry.grid(row=7, column=1, sticky="ew", pady=10, ipady=10)
-
-order_label = tk.Label(frame, text="", font=BOLD, fg="red")
-order_label.grid(row=8, column=0, columnspan=2, pady=15)
-
-dropoff_label = tk.Label(frame, text="", font=BIG, fg="blue")
-dropoff_label.grid(row=9, column=0, columnspan=2)
-
-pickup_label = tk.Label(frame, text="", font=BIG, fg="purple")
-pickup_label.grid(row=10, column=0, columnspan=2)
-
-save_button = tk.Button(
+tk.Checkbutton(
     frame,
-    font=("Arial", 24, "bold"),
+    text="Separate Whites & Colors ($2/lb)",
+    variable=separate_var,
+    command=update_price,
+    font=("Arial",22)
+).grid(row=6,column=0,columnspan=2,sticky="w")
+
+tk.Label(frame,text="Queen Comforter (+$20)",font=BIG).grid(row=7,column=0)
+
+qframe=tk.Frame(frame)
+qframe.grid(row=7,column=1)
+
+tk.Button(qframe,text="-",font=("Arial",22),command=lambda:change_queen(-1)).pack(side="left")
+tk.Label(qframe,textvariable=queen_qty,font=("Arial",24),width=3).pack(side="left")
+tk.Button(qframe,text="+",font=("Arial",22),command=lambda:change_queen(1)).pack(side="left")
+
+tk.Label(frame,text="King Comforter (+$25)",font=BIG).grid(row=8,column=0)
+
+kframe=tk.Frame(frame)
+kframe.grid(row=8,column=1)
+
+tk.Button(kframe,text="-",font=("Arial",22),command=lambda:change_king(-1)).pack(side="left")
+tk.Label(kframe,textvariable=king_qty,font=("Arial",24),width=3).pack(side="left")
+tk.Button(kframe,text="+",font=("Arial",22),command=lambda:change_king(1)).pack(side="left")
+
+tk.Label(frame,text="Price ($)",font=BIG).grid(row=9,column=0)
+tk.Entry(frame,font=ENTRY,textvariable=money_var,state="readonly").grid(row=9,column=1,ipady=12)
+
+tk.Label(frame,text="Receipt Copies",font=BIG).grid(row=10,column=0)
+tk.Entry(frame,font=ENTRY,width=5,textvariable=copies_text).grid(row=10,column=1)
+
+order_label=tk.Label(frame,text="",font=BOLD,fg="red")
+order_label.grid(row=11,column=0,columnspan=2)
+
+dropoff_label=tk.Label(frame,text="",font=BIG)
+dropoff_label.grid(row=12,column=0,columnspan=2)
+
+pickup_label=tk.Label(frame,text="",font=BIG)
+pickup_label.grid(row=13,column=0,columnspan=2)
+
+tk.Button(
+    frame,
+    text="SAVE ENTRY & PRINT RECEIPT",
+    font=("Arial",34,"bold"),
     bg="#4CAF50",
     fg="white",
     height=2,
     command=save_entry
-)
-save_button.grid(row=11, column=0, columnspan=2, sticky="ew", pady=30)
+).grid(row=14,column=0,columnspan=2,sticky="ew",pady=30)
 
-update_language()
+tk.Button(
+    frame,
+    text="DAILY DASHBOARD",
+    font=("Arial",26,"bold"),
+    bg="#2196F3",
+    fg="white",
+    command=show_dashboard
+).grid(row=15,column=0,columnspan=2,sticky="ew",pady=10)
+
 root.mainloop()
