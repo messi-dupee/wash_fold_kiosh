@@ -491,6 +491,10 @@ def change_king(delta):
 # SAVE ENTRY
 # ==========================================================
 
+# ==========================================================
+# SAVE ENTRY
+# ==========================================================
+
 def save_entry():
 
     global loaded_order_id
@@ -523,29 +527,70 @@ def save_entry():
 
     copies = min(10,max(1,int(copies_text.get())))
 
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # ----------------------------------
+    # UPDATE EXISTING ORDER
+    # ----------------------------------
+
     if loaded_order_id:
+
+        c.execute("""
+        UPDATE entries
+        SET number=?,
+            name=?,
+            weight=?,
+            queen_qty=?,
+            king_qty=?,
+            price=?,
+            separate=?,
+            express=?
+        WHERE id=?
+        """,(
+            number,
+            name,
+            weight,
+            queen_qty.get(),
+            king_qty.get(),
+            total,
+            separate_var.get(),
+            express_var.get(),
+            loaded_order_id
+        ))
 
         order = loaded_order_id
 
-    else:
+    # ----------------------------------
+    # CREATE NEW ORDER
+    # ----------------------------------
 
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+    else:
 
         c.execute("""
         INSERT INTO entries
         (number,name,weight,queen_qty,king_qty,price,separate,express,dropoff_time)
         VALUES(?,?,?,?,?,?,?,?,?)
-        """,(number,name,weight,
-             queen_qty.get(),king_qty.get(),
-             total,separate_var.get(),
-             express_var.get(),
-             drop_db))
+        """,(
+            number,
+            name,
+            weight,
+            queen_qty.get(),
+            king_qty.get(),
+            total,
+            separate_var.get(),
+            express_var.get(),
+            drop_db
+        ))
 
         order = c.lastrowid
 
-        conn.commit()
-        conn.close()
+    conn.commit()
+    conn.close()
+
+    # ----------------------------------
+    # PRINT RECEIPT
+    # ----------------------------------
 
     threading.Thread(
         target=print_receipt,
@@ -559,7 +604,6 @@ def save_entry():
     order_label.config(text=f"Order Number: {order}")
     dropoff_label.config(text=f"Drop-Off: {drop}")
     pickup_label.config(text=f"Pickup: {pick}")
-
 
 # ==========================================================
 # DASHBOARD
